@@ -224,7 +224,11 @@ async def vpn_status(user_id: str):
 
 
 @app.post("/vpn/disconnect")
-async def vpn_disconnect(user_id: str):
+async def vpn_disconnect(req: dict):
+    user_id = req.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    
     conn = connections.get(user_id)
     if not conn:
         raise HTTPException(status_code=404, detail=f"No VPN session found for user '{user_id}'")
@@ -281,10 +285,10 @@ async def ssh_connect(req: SSHConnectRequest):
         "username": req.username,
         "password": req.password,
         "port": req.port,
-        "timeout": 10
+        "timeout": 20
     }
     
-    result = await run_blocking(send_to_ssh_manager, container_id, connect_cmd, 15)
+    result = await run_blocking(send_to_ssh_manager, container_id, connect_cmd, 25)
     
     if not result.get("success"):
         error_msg = result.get("error", "Unknown error")
@@ -295,6 +299,40 @@ async def ssh_connect(req: SSHConnectRequest):
     if req.user_id not in ssh_sessions:
         ssh_sessions[req.user_id] = {}
     
+    # Auto-detect GPUs after connection
+    gpu_available = None
+    gpu_count = 0
+    
+    try:
+        if req.cluster_type == "bastion":
+            # For bastion, SSH to node1 and check GPUs
+            detect_cmd = {
+                "command": "execute",
+                "session_id": req.session_id,
+                "cmd": "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no node1 'nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l' 2>/dev/null || echo 0",
+                "timeout": 10
+            }
+        else:
+            # For simple/slurm, directly check GPUs on login node
+            detect_cmd = {
+                "command": "execute",
+                "session_id": req.session_id,
+                "cmd": "timeout 5 nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l || echo 0",
+                "timeout": 8
+            }
+        
+        gpu_result = await run_blocking(send_to_ssh_manager, container_id, detect_cmd, 12)
+        if gpu_result.get("success"):
+            try:
+                output = gpu_result.get("stdout", "0").strip()
+                gpu_count = int(output) if output.isdigit() else 0
+                gpu_available = gpu_count > 0
+            except (ValueError, AttributeError):
+                gpu_available = False
+    except Exception as e:
+        logger.warning("GPU detection failed for %s/%s: %s", req.user_id, req.session_id, e)
+        gpu_available = False
+    
     ssh_sessions[req.user_id][req.session_id] = {
         "container_id": container_id,
         "hostname": req.hostname,
@@ -302,9 +340,12 @@ async def ssh_connect(req: SSHConnectRequest):
         "port": req.port,
         "connected_at": time.time(),
         "persistent": True,  # Mark as persistent paramiko connection
+        "cluster_type": req.cluster_type,
+        "gpu_available": gpu_available,
+        "gpu_count": gpu_count,
     }
     
-    logger.info("[ssh] connected %s/%s to %s:%s via persistent paramiko in container", req.user_id, req.session_id, req.hostname, req.port)
+    logger.info("[ssh] connected %s/%s to %s:%s (type=%s, gpus=%d) via persistent paramiko in container", req.user_id, req.session_id, req.hostname, req.port, req.cluster_type, gpu_count)
     return {
         "connected": True,
         "user_id": req.user_id,
@@ -312,6 +353,9 @@ async def ssh_connect(req: SSHConnectRequest):
         "hostname": req.hostname,
         "port": req.port,
         "persistent": True,
+        "cluster_type": req.cluster_type,
+        "gpu_available": gpu_available,
+        "gpu_count": gpu_count,
     }
 
 
@@ -338,6 +382,9 @@ async def ssh_status(user_id: str):
             "port": session.get("port"),
             "active": active,
             "connected_at": session.get("connected_at"),
+            "cluster_type": session.get("cluster_type", "simple"),
+            "gpu_available": session.get("gpu_available"),
+            "gpu_count": session.get("gpu_count", 0),
         })
     
     return {
@@ -564,7 +611,9 @@ async def api_remote_fs_read(user_id: str, path: str, offset: int = 0, length: i
 
 @app.get("/api/gpu/info")
 async def api_gpu_info(user_id: str, session_id: str = "default"):
-    """Get GPU information using nvidia-smi from remote SSH host via persistent paramiko connection in container."""
+    """Get comprehensive GPU information optimized for low latency.
+    Uses nvidia-smi with minimal fields for fastest response.
+    Handles bastion clusters by SSHing to node1."""
     if user_id not in ssh_sessions:
         raise HTTPException(status_code=404, detail=f"No SSH sessions for user '{user_id}'.")
     
@@ -575,49 +624,80 @@ async def api_gpu_info(user_id: str, session_id: str = "default"):
     session = user_sessions[session_id]
     container_id = session.get("container_id")
     hostname = session.get("hostname")
+    cluster_type = session.get("cluster_type", "simple")
     
     if not container_id:
         raise HTTPException(status_code=500, detail="Container not available")
     
-    # Execute nvidia-smi via ssh_manager.py using persistent connection
-    remote_cmd = "nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,utilization.memory,memory.total,memory.used,memory.free --format=csv,noheader,nounits"
+    # Optimized nvidia-smi query - only essential fields for speed
+    # Added power draw, fan speed, and compute processes
+    nvidia_query = "nvidia-smi --query-gpu=index,name,temperature.gpu,fan.speed,power.draw,power.limit,utilization.gpu,utilization.memory,memory.total,memory.used,memory.free --format=csv,noheader,nounits"
+    
+    # For bastion, SSH to node1 first
+    if cluster_type == "bastion":
+        remote_cmd = f"ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no node1 '{nvidia_query}' 2>/dev/null"
+    else:
+        remote_cmd = nvidia_query
+    
     execute_cmd = {
         "command": "execute",
         "session_id": session_id,
         "cmd": remote_cmd,
-        "timeout": 30
+        "timeout": 10
     }
     
-    result = await run_blocking(send_to_ssh_manager, container_id, execute_cmd, 35)
+    result = await run_blocking(send_to_ssh_manager, container_id, execute_cmd, 12)
     
     if not result.get("success"):
         error_msg = result.get("error", "Unknown error")
         raise HTTPException(status_code=500, detail=f"nvidia-smi failed: {error_msg}")
     
     if result.get("exit_code", 0) != 0:
-        raise HTTPException(status_code=500, detail=f"nvidia-smi failed: {result.get('stderr', '')}")
+        stderr = result.get("stderr", "")
+        if "not found" in stderr.lower() or "no devices" in stderr.lower():
+            return {"hostname": hostname, "gpus": [], "count": 0, "cluster_type": cluster_type}
+        raise HTTPException(status_code=500, detail=f"nvidia-smi failed: {stderr}")
     
     out = result.get("stdout", "")
     
-    # Parse CSV output
+    # Parse CSV output with comprehensive metrics
     gpus = []
     for line in out.strip().split("\n"):
         if not line.strip():
             continue
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 8:
-            gpus.append({
-                "index": int(parts[0]) if parts[0].isdigit() else parts[0],
-                "name": parts[1],
-                "temperature": int(parts[2]) if parts[2].isdigit() else None,
-                "utilization_gpu": int(parts[3]) if parts[3].isdigit() else None,
-                "utilization_memory": int(parts[4]) if parts[4].isdigit() else None,
-                "memory_total": int(parts[5]) if parts[5].isdigit() else None,
-                "memory_used": int(parts[6]) if parts[6].isdigit() else None,
-                "memory_free": int(parts[7]) if parts[7].isdigit() else None,
-            })
+        if len(parts) >= 11:
+            try:
+                memory_total = int(parts[8]) if parts[8].isdigit() else 0
+                memory_used = int(parts[9]) if parts[9].isdigit() else 0
+                memory_free = int(parts[10]) if parts[10].isdigit() else 0
+                
+                gpu_data = {
+                    "index": int(parts[0]) if parts[0].isdigit() else 0,
+                    "name": parts[1],
+                    "temperature": int(parts[2]) if parts[2].isdigit() else None,
+                    "fan_speed": int(parts[3]) if parts[3].isdigit() else None,
+                    "power_draw": float(parts[4]) if parts[4].replace('.', '').isdigit() else None,
+                    "power_limit": float(parts[5]) if parts[5].replace('.', '').isdigit() else None,
+                    "utilization_gpu": int(parts[6]) if parts[6].isdigit() else 0,
+                    "utilization_memory": int(parts[7]) if parts[7].isdigit() else 0,
+                    "memory_total": memory_total,
+                    "memory_used": memory_used,
+                    "memory_free": memory_free,
+                    "memory_percent": round((memory_used / memory_total * 100) if memory_total > 0 else 0, 1)
+                }
+                gpus.append(gpu_data)
+            except (ValueError, IndexError) as e:
+                logger.warning("Failed to parse GPU line: %s - %s", line, e)
+                continue
     
-    return {"hostname": hostname, "gpus": gpus, "count": len(gpus)}
+    return {
+        "hostname": hostname,
+        "gpus": gpus,
+        "count": len(gpus),
+        "cluster_type": cluster_type,
+        "timestamp": int(time.time())
+    }
 
 
 if __name__ == "__main__":

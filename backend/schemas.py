@@ -17,6 +17,7 @@ class SSHConnectRequest(BaseModel):
     username: str
     password: Optional[str] = None
     port: int = 22
+    cluster_type: str = Field("simple", description="Cluster type: slurm, bastion, or simple")
 
 
 class BastionRunRequest(BaseModel):
