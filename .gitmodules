@@ -1,0 +1,3 @@
+[submodule "cluster-dash"]
+	path = cluster-dash
+	url = https://github.com/MalayPhadke/cluster-dash.git
