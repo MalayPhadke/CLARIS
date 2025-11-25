@@ -148,12 +148,19 @@ def exec_in_container(container_id: str, command: str, timeout: int = 30) -> Tup
     """
     cmd = ["docker", "exec", container_id, "sh", "-lc", command]
     try:
-        cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        # Add a small buffer to subprocess timeout to allow graceful handling
+        cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout + 2)
         out = cp.stdout.decode("utf-8", errors="replace") if isinstance(cp.stdout, (bytes, bytearray)) else (cp.stdout or "")
         err = cp.stderr.decode("utf-8", errors="replace") if isinstance(cp.stderr, (bytes, bytearray)) else (cp.stderr or "")
         return out, err, cp.returncode
     except subprocess.TimeoutExpired:
         logger.warning("Command timed out after %ds in container %s", timeout, container_id[:12])
+        # Try to kill any hanging processes
+        try:
+            subprocess.run(["docker", "exec", container_id, "pkill", "-9", "-f", "nc"], 
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+        except:
+            pass
         return "", f"Command execution exceeded {timeout}s timeout", 124
     except Exception as e:
         logger.error("Failed to exec in container %s: %s", container_id[:12], e)

@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+paramiko
+pyyaml
+pyjwt
+cryptography
+google-generativeai
+python-dotenv

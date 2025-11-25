@@ -1,0 +1,38 @@
+{
+  "vpn_afcd473634d59731:ssh_10_16_63_23_malaymilindp_1763999702582": {
+    "session_id": "vpn_afcd473634d59731:ssh_10_16_63_23_malaymilindp_1763999702582",
+    "user_id": "vpn_afcd473634d59731",
+    "container_id": "c8a6b5a97800",
+    "ssh_session_id": "ssh_10_16_63_23_malaymilindp_1763999702582",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful AI assistant for a remote cluster/server environment. \nYou have access to tools to read/write files, execute commands, list directories, and search for files.\n\nWhen the user asks you to do something:\n1. Use the appropriate tools to accomplish the task\n2. Explain what you're doing in a clear, concise way\n3. Show command outputs or file contents when relevant\n\nContext files (added via @ mentions) are files the user wants you to focus on. \nWhen context files are present, prioritize them in your responses.\n\nBe proactive and helpful. If you need more information, ask the user."
+      },
+      {
+        "role": "user",
+        "content": "can you check @compute_snne.py "
+      },
+      {
+        "role": "assistant",
+        "content": "An error occurred: Gemini API not configured. Set GEMINI_API_KEY environment variable."
+      }
+    ],
+    "context_files": [],
+    "last_activity": 1763999836.237052
+  },
+  "vpn_afcd473634d59731:ssh_10_64_18_58_debarpanb1_1764000888153": {
+    "session_id": "vpn_afcd473634d59731:ssh_10_64_18_58_debarpanb1_1764000888153",
+    "user_id": "vpn_afcd473634d59731",
+    "container_id": "c8a6b5a97800",
+    "ssh_session_id": "ssh_10_64_18_58_debarpanb1_1764000888153",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful AI assistant for a remote cluster/server environment. \nYou have access to tools to read/write files, execute commands, list directories, and search for files.\n\nWhen the user asks you to do something:\n1. Use the appropriate tools to accomplish the task\n2. Explain what you're doing in a clear, concise way\n3. Show command outputs or file contents when relevant\n\nContext files (added via @ mentions) are files the user wants you to focus on. \nWhen context files are present, prioritize them in your responses.\n\nBe proactive and helpful. If you need more information, ask the user."
+      }
+    ],
+    "context_files": [],
+    "last_activity": 1764001024.9048033
+  }
+}

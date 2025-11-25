@@ -11,7 +11,7 @@ class VPNConnectRequest(BaseModel):
 
 
 class SSHConnectRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # Optional - JWT auth provides it
     session_id: str = "default"
     hostname: str
     username: str
@@ -21,7 +21,7 @@ class SSHConnectRequest(BaseModel):
 
 
 class BastionRunRequest(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None  # Optional - JWT auth provides it
     session_id: str = "default"
     command: str
     timeout: int = 30
