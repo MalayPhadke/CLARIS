@@ -96,7 +96,25 @@ Be proactive and helpful. If you need more information, ask the user."""
             
             # Add context files info if present
             if self.context_files:
-                context_info = f"\n\n[Context files: {', '.join(self.context_files)}]"
+                context_info = "\n\n[Context Files Content]:\n"
+                
+                for file_path in self.context_files:
+                    try:
+                        # Read file content using tool executor (limit to 10KB to avoid context overflow)
+                        read_result = self.tool_executor.execute_tool("read_file", {"path": file_path})
+                        
+                        if read_result["success"]:
+                            content = read_result["result"]
+                            # Truncate if too long
+                            if len(content) > 10000:
+                                content = content[:10000] + "\n...[truncated]..."
+                            
+                            context_info += f"\n--- File: {file_path} ---\n{content}\n-------------------\n"
+                        else:
+                            context_info += f"\n--- File: {file_path} ---\n[Error reading file: {read_result['error']}]\n-------------------\n"
+                    except Exception as e:
+                        context_info += f"\n--- File: {file_path} ---\n[Error reading file: {str(e)}]\n-------------------\n"
+                
                 self.messages[-1]["content"] += context_info
             
             # Agent loop: LLM -> Tool Calls -> LLM (until done)
