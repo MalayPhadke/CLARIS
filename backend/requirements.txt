@@ -1,8 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
 paramiko
 pyyaml
 pyjwt
 cryptography
 google-generativeai
 python-dotenv
+websockets

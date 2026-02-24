@@ -2,6 +2,10 @@
 
 Provides container lifecycle, exec-in-container and helper to start openconnect inside
 the container. These are thin wrappers around the docker CLI to keep the MVP simple.
+
+VPN DISABLED (2026-02-10): OpenConnect VPN functionality has been disabled since the
+backend is now deployed on the same network as HPC clusters. The run_openconnect_in_container
+function is kept but disabled for potential future use.
 """
 from __future__ import annotations
 
@@ -170,6 +174,14 @@ def exec_in_container(container_id: str, command: str, timeout: int = 30) -> Tup
 def run_openconnect_in_container(container_id: str, vpn_url: str, username: str | None, password: str | None, protocol: str = "anyconnect") -> bool:
     """Start openconnect VPN inside the container.
     
+    VPN DISABLED (2026-02-10): This function is disabled since the backend is now
+    on the same network as HPC clusters. Returns True immediately without starting VPN.
+    
+    To re-enable VPN:
+    1. Uncomment the VPN logic below
+    2. Uncomment the import in app.py
+    3. Update login endpoint to call this function
+    
     Args:
         container_id: Container ID
         vpn_url: VPN server URL
@@ -178,36 +190,46 @@ def run_openconnect_in_container(container_id: str, vpn_url: str, username: str 
         protocol: VPN protocol (default: anyconnect)
     
     Returns:
-        True if openconnect started successfully
+        True (VPN disabled - always returns success)
     
     Raises:
-        RuntimeError: If openconnect fails to start
+        RuntimeError: If openconnect fails to start (when enabled)
     """
-
-    if not vpn_url:
-        raise RuntimeError("VPN URL is required")
+    # VPN DISABLED - Return success immediately without starting VPN
+    logger.info("VPN DISABLED: Skipping openconnect for container %s (local network access)", container_id[:12])
+    return True
     
-    import base64
-    
-    user_part = f"--user {shlex.quote(username)}" if username else ""
-    # Use base64 to avoid all shell escaping issues with password
-    b64_password = base64.b64encode((password or '').encode('utf-8')).decode('ascii')
-    # Simple approach: echo password and pipe to openconnect, run in background
-    cmd_str = f"nohup bash -c 'echo {b64_password} | base64 -d | openconnect {shlex.quote(vpn_url)} {user_part} --protocol {shlex.quote(protocol)} --passwd-on-stdin' >/tmp/openconnect.log 2>&1 &"
-    out, err, rc = exec_in_container(container_id, cmd_str, timeout=60)
-    if rc != 0:
-        logger.error("Failed to launch openconnect in container %s: %s", container_id[:12], err)
-        raise RuntimeError(f"OpenConnect launch failed: {err or 'unknown error'}")
-
-    # Wait for openconnect process to appear (up to 10 seconds)
-    for i in range(10):
-        out2, err2, rc2 = exec_in_container(container_id, "pgrep -f openconnect || true", timeout=5)
-        if out2.strip():
-            logger.info("OpenConnect started successfully in container %s (PID: %s)", container_id[:12], out2.strip())
-            return True
-        time.sleep(1)
-    
-    # Fetch logs for debugging
-    log_out, _, _ = exec_in_container(container_id, "tail -n 20 /tmp/openconnect.log 2>/dev/null || echo 'no logs'", timeout=5)
-    logger.error("OpenConnect process not found after 10s. Logs: %s", log_out[:500])
-    raise RuntimeError(f"OpenConnect did not start within 10 seconds. Check VPN credentials and URL. Last logs: {log_out[:200]}")
+    # ============================================================================
+    # VPN DISABLED - The following code is commented out for local network access
+    # Uncomment to re-enable VPN functionality
+    # ============================================================================
+    # if not vpn_url:
+    #     raise RuntimeError("VPN URL is required")
+    # 
+    # import base64
+    # 
+    # user_part = f"--user {shlex.quote(username)}" if username else ""
+    # # Use base64 to avoid all shell escaping issues with password
+    # b64_password = base64.b64encode((password or '').encode('utf-8')).decode('ascii')
+    # # Simple approach: echo password and pipe to openconnect, run in background
+    # cmd_str = f"nohup bash -c 'echo {b64_password} | base64 -d | openconnect {shlex.quote(vpn_url)} {user_part} --protocol {shlex.quote(protocol)} --passwd-on-stdin' >/tmp/openconnect.log 2>&1 &"
+    # out, err, rc = exec_in_container(container_id, cmd_str, timeout=60)
+    # if rc != 0:
+    #     logger.error("Failed to launch openconnect in container %s: %s", container_id[:12], err)
+    #     raise RuntimeError(f"OpenConnect launch failed: {err or 'unknown error'}")
+    #
+    # # Wait for openconnect process to appear (up to 10 seconds)
+    # for i in range(10):
+    #     out2, err2, rc2 = exec_in_container(container_id, "pgrep -f openconnect || true", timeout=5)
+    #     if out2.strip():
+    #         logger.info("OpenConnect started successfully in container %s (PID: %s)", container_id[:12], out2.strip())
+    #         return True
+    #     time.sleep(1)
+    # 
+    # # Fetch logs for debugging
+    # log_out, _, _ = exec_in_container(container_id, "cat /tmp/openconnect.log 2>/dev/null || echo 'No log'", timeout=5)
+    # logger.error("OpenConnect did not start within timeout. Log: %s", log_out[:500])
+    # raise RuntimeError(f"OpenConnect process did not start. Check credentials and server. Log: {log_out[:200]}")
+    # ============================================================================
+    # END VPN DISABLED SECTION
+    # ============================================================================

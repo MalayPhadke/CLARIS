@@ -33,7 +33,8 @@ from docker_utils import (
     remove_container,
     container_is_running,
     exec_in_container,
-    run_openconnect_in_container,
+    # VPN DISABLED - Local network access, no VPN needed
+    # run_openconnect_in_container,
 )
 from persistence import save_connections_to_disk, load_connections_from_disk
 from ssh_utils import build_paramiko_client_sync, HAS_PARAMIKO
@@ -100,9 +101,10 @@ def audit_log(user_id: str, action: str, details: str = "", ip: str = "unknown")
 
 # Auth Models
 class LoginRequest(BaseModel):
-    vpn_url: str
-    vpn_username: str
-    vpn_password: str
+    # VPN DISABLED - vpn_url is now optional/deprecated (local network access)
+    vpn_url: Optional[str] = None  # Kept for backward compatibility, not used
+    vpn_username: str  # Used as username for identification
+    vpn_password: str  # Used as password for identification
     remember_me: bool = True
 
 class LoginResponse(BaseModel):
@@ -151,18 +153,28 @@ agent_manager = None  # Initialized on startup
 
 
 def generate_user_id(vpn_url: str, username: str) -> str:
-    """Generate deterministic user_id from VPN credentials."""
-    credential_string = f"{vpn_url}:{username}"
+    """Generate deterministic user_id from credentials.
+    
+    VPN DISABLED: Now uses only username for ID generation.
+    vpn_url parameter kept for backward compatibility but ignored.
+    """
+    # VPN DISABLED - Use only username for user_id generation
+    # credential_string = f"{vpn_url}:{username}"
+    credential_string = f"local:{username}"
     hash_digest = hashlib.sha256(credential_string.encode()).hexdigest()
-    return f"vpn_{hash_digest[:16]}"
+    return f"user_{hash_digest[:16]}"
 
 
 def create_jwt_token(user_id: str, vpn_url: str, username: str) -> str:
-    """Create JWT token for user session."""
+    """Create JWT token for user session.
+    
+    VPN DISABLED: vpn_url kept in payload for backward compatibility but set to 'local'.
+    """
     expiration = datetime.utcnow() + timedelta(days=JWT_EXPIRATION_DAYS)
     payload = {
         "user_id": user_id,
-        "vpn_url": vpn_url,
+        # VPN DISABLED - Using placeholder value
+        "vpn_url": vpn_url or "local",
         "username": username,
         "exp": expiration,
         "iat": datetime.utcnow()
@@ -296,7 +308,10 @@ def _shutdown():
 @app.post("/auth/login")
 async def login(req: LoginRequest):
     """Authenticate user and create JWT token.
-    Generates deterministic user_id from VPN credentials for session persistence.
+    Generates deterministic user_id from credentials for session persistence.
+    
+    VPN DISABLED: Container is created for SSH access but VPN connection is skipped.
+    The backend is now on the same network as HPC clusters.
     """
     # Get client IP for rate limiting and audit logging
     # Note: In production, use X-Forwarded-For behind proxy
@@ -317,7 +332,7 @@ async def login(req: LoginRequest):
     
     login_attempts[client_ip].append(now)
     
-    # Generate deterministic user_id
+    # Generate deterministic user_id (VPN DISABLED - uses only username now)
     user_id = generate_user_id(req.vpn_url, req.vpn_username)
     
     # Check per-user rate limiting
@@ -340,17 +355,19 @@ async def login(req: LoginRequest):
             container_reused = True
             logger.info("[auth] reusing existing container %s for user %s", container_id[:12], user_id)
     
-    # If no existing container, create one and connect VPN
+    # If no existing container, create one (VPN DISABLED - no VPN connection needed)
     if not container_id:
         try:
             container_id = await run_blocking(create_container_for_user, user_id, "vigilink-backend:latest")
             logger.info("[auth] created container %s for user %s", container_id[:12], user_id)
             
-            # Start VPN connection
-            started = await run_blocking(run_openconnect_in_container, container_id, req.vpn_url, req.vpn_username, req.vpn_password)
-            if not started:
-                await run_blocking(remove_container, container_id)
-                raise HTTPException(status_code=500, detail="VPN connection failed")
+            # VPN DISABLED - Skipping VPN connection, backend is on local network
+            # The following VPN connection code is commented out:
+            # started = await run_blocking(run_openconnect_in_container, container_id, req.vpn_url, req.vpn_username, req.vpn_password)
+            # if not started:
+            #     await run_blocking(remove_container, container_id)
+            #     raise HTTPException(status_code=500, detail="VPN connection failed")
+            logger.info("[auth] VPN DISABLED - container ready for direct SSH access")
                 
         except Exception as e:
             logger.error("Login failed for user %s: %s", user_id, e)
@@ -361,18 +378,19 @@ async def login(req: LoginRequest):
                     pass
             raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
     
-    # Store user session with encrypted VPN password
+    # Store user session with encrypted password (for potential future use)
     username_hash = hashlib.sha256(req.vpn_username.encode()).hexdigest()[:16]
     encrypted_vpn_password = encrypt_password(req.vpn_password)
     
     user_sessions[user_id] = {
-        "vpn_url": req.vpn_url,
+        # VPN DISABLED - vpn_url kept for backward compatibility
+        "vpn_url": req.vpn_url or "local",
         "username_hash": username_hash,
         "container_id": container_id,
         "last_active": int(time.time()),
         "created_at": int(time.time()),
         "ssh_credentials": {},  # Store SSH connection info: {session_id: {hostname, username, encrypted_password, port, cluster_type}}
-        "vpn_password_encrypted": encrypted_vpn_password,  # Encrypted VPN password for container reconnection
+        "password_encrypted": encrypted_vpn_password,  # Encrypted password for session identification
         "ip_address": client_ip,  # Track IP for security
         "login_count": user_sessions.get(user_id, {}).get("login_count", 0) + 1
     }
@@ -381,19 +399,20 @@ async def login(req: LoginRequest):
     connections[user_id] = {
         "container_id": container_id,
         "container_started_at": int(time.time()),
-        "vpn_connected": True
+        # VPN DISABLED - Always True since we're on local network
+        "vpn_connected": True  # Kept for backward compatibility
     }
     
     # Generate JWT token
-    token = create_jwt_token(user_id, req.vpn_url, req.vpn_username)
+    token = create_jwt_token(user_id, req.vpn_url or "local", req.vpn_username)
     expiration = datetime.utcnow() + timedelta(days=JWT_EXPIRATION_DAYS)
     
     # Clear login attempts on successful login
     if client_ip in login_attempts:
         login_attempts[client_ip] = []
     
-    # Security audit log
-    audit_log(user_id, "LOGIN_SUCCESS", f"VPN: {req.vpn_url}, container: {container_id[:12]}", client_ip)
+    # Security audit log (VPN DISABLED - logging local access)
+    audit_log(user_id, "LOGIN_SUCCESS", f"local_access, container: {container_id[:12]}", client_ip)
     logger.info("[auth] login successful for user %s, token expires in %d days, container_reused=%s", user_id, JWT_EXPIRATION_DAYS, container_reused)
     
     return LoginResponse(
@@ -458,6 +477,12 @@ async def logout(current_user: Dict = Depends(get_current_user)):
 
 @app.post("/vpn/connect")
 async def vpn_connect(req: VPNConnectRequest, current_user: Dict = Depends(get_current_user)):
+    """VPN DISABLED - This endpoint now only manages container lifecycle.
+    
+    VPN functionality has been disabled since the backend is now on the same
+    network as HPC clusters. The endpoint is kept for backward compatibility
+    and still creates/reuses containers for SSH access.
+    """
     if not req.user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
@@ -472,19 +497,21 @@ async def vpn_connect(req: VPNConnectRequest, current_user: Dict = Depends(get_c
     # Check if container already exists and is running
     prev_cid = conn.get("container_id")
     if prev_cid and await run_blocking(container_is_running, prev_cid):
-        logger.info("[vpn->container] reusing existing container %s for %s", prev_cid[:12], req.user_id)
-        # If real VPN requested and not already connected, start openconnect
-        if req.real and not conn.get("vpn_connected"):
-            if not req.vpn_url:
-                raise HTTPException(status_code=400, detail="vpn_url is required when real=true")
-            try:
-                started = await run_blocking(run_openconnect_in_container, prev_cid, req.vpn_url, req.username, req.password)
-                if started:
-                    conn["vpn_connected"] = True
-                    connections[req.user_id] = conn
-            except Exception as e:
-                logger.error("OpenConnect startup failed for user %s: %s", req.user_id, e)
-                raise HTTPException(status_code=500, detail=f"VPN connection failed: {str(e)}")
+        logger.info("[container] reusing existing container %s for %s", prev_cid[:12], req.user_id)
+        # VPN DISABLED - Skip VPN connection logic
+        # if req.real and not conn.get("vpn_connected"):
+        #     if not req.vpn_url:
+        #         raise HTTPException(status_code=400, detail="vpn_url is required when real=true")
+        #     try:
+        #         started = await run_blocking(run_openconnect_in_container, prev_cid, req.vpn_url, req.username, req.password)
+        #         if started:
+        #             conn["vpn_connected"] = True
+        #             connections[req.user_id] = conn
+        #     except Exception as e:
+        #         logger.error("OpenConnect startup failed for user %s: %s", req.user_id, e)
+        #         raise HTTPException(status_code=500, detail=f"VPN connection failed: {str(e)}")
+        conn["vpn_connected"] = True  # VPN DISABLED - Always mark as connected
+        connections[req.user_id] = conn
         return {"status": "reused", "user_id": req.user_id, "container_id": prev_cid}
 
     if not docker_available():
@@ -498,51 +525,63 @@ async def vpn_connect(req: VPNConnectRequest, current_user: Dict = Depends(get_c
 
     conn["container_id"] = container_id
     conn["container_started_at"] = int(time.time())
+    conn["vpn_connected"] = True  # VPN DISABLED - Always mark as connected
     connections[req.user_id] = conn
-    logger.info("[vpn->container] started for %s container=%s", req.user_id, container_id)
+    logger.info("[container] started for %s container=%s (VPN DISABLED)", req.user_id, container_id)
 
-    # If the client requested a "real" vpn connection, start openconnect inside the container
-    if req.real:
-        if not req.vpn_url:
-            await run_blocking(remove_container, container_id)
-            raise HTTPException(status_code=400, detail="vpn_url is required when real=true")
-        try:
-            started = await run_blocking(run_openconnect_in_container, container_id, req.vpn_url, req.username, req.password)
-        except Exception as e:
-            logger.error("OpenConnect startup failed for user %s: %s", req.user_id, e)
-            # cleanup container on failure
-            try:
-                await run_blocking(remove_container, container_id)
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"VPN connection failed: {str(e)}")
-        if not started:
-            await run_blocking(remove_container, container_id)
-            raise HTTPException(status_code=500, detail="OpenConnect process failed to start. Check VPN credentials and server URL.")
+    # VPN DISABLED - Skip openconnect connection
+    # if req.real:
+    #     if not req.vpn_url:
+    #         await run_blocking(remove_container, container_id)
+    #         raise HTTPException(status_code=400, detail="vpn_url is required when real=true")
+    #     try:
+    #         started = await run_blocking(run_openconnect_in_container, container_id, req.vpn_url, req.username, req.password)
+    #     except Exception as e:
+    #         logger.error("OpenConnect startup failed for user %s: %s", req.user_id, e)
+    #         # cleanup container on failure
+    #         try:
+    #             await run_blocking(remove_container, container_id)
+    #         except Exception:
+    #             pass
+    #         raise HTTPException(status_code=500, detail=f"VPN connection failed: {str(e)}")
+    #     if not started:
+    #         await run_blocking(remove_container, container_id)
+    #         raise HTTPException(status_code=500, detail="OpenConnect process failed to start. Check VPN credentials and server URL.")
 
     return {"status": "started", "user_id": req.user_id, "container_id": container_id}
 
 
 @app.get("/vpn/status")
 async def vpn_status(current_user: Dict = Depends(get_current_user)):
+    """VPN DISABLED - Returns container status instead of VPN status.
+    
+    Since VPN is disabled, this endpoint now just reports if the container is running.
+    For backward compatibility, 'connected' is always True when container is running.
+    """
     user_id = current_user["user_id"]
     conn = connections.get(user_id)
     if not conn:
-        raise HTTPException(status_code=404, detail=f"No VPN session found for user '{user_id}'")
+        # VPN DISABLED - Return not found but with helpful message
+        raise HTTPException(status_code=404, detail=f"No session found for user '{user_id}'. Please login first.")
     container_id = conn.get("container_id")
     if container_id:
         running = await run_blocking(container_is_running, container_id)
-        return {"connected": running, "container_id": container_id}
-    return {"connected": False}
+        # VPN DISABLED - 'connected' now means container is running
+        return {"connected": running, "container_id": container_id, "vpn_disabled": True}
+    return {"connected": False, "vpn_disabled": True}
 
 
 @app.post("/vpn/disconnect")
 async def vpn_disconnect(current_user: Dict = Depends(get_current_user)):
+    """VPN DISABLED - This endpoint removes the user's container.
+    
+    Since VPN is disabled, this just cleans up the container.
+    """
     user_id = current_user["user_id"]
     
     conn = connections.get(user_id)
     if not conn:
-        raise HTTPException(status_code=404, detail=f"No VPN session found for user '{user_id}'")
+        raise HTTPException(status_code=404, detail=f"No session found for user '{user_id}'")
     container_id = conn.get("container_id")
     if container_id:
         try:
@@ -551,14 +590,18 @@ async def vpn_disconnect(current_user: Dict = Depends(get_current_user)):
             logger.exception("failed to remove container %s", container_id)
         conn.pop("container_id", None)
     connections[user_id] = conn
-    logger.info("[vpn->container] disconnected for %s", user_id)
-    return {"status": "stopped"}
+    logger.info("[container] disconnected for %s (VPN DISABLED)", user_id)
+    return {"status": "stopped", "vpn_disabled": True}
 
 
 @app.post("/ssh/connect")
 async def ssh_connect(req: SSHConnectRequest, current_user: Dict = Depends(get_current_user)):
     """Create a new persistent SSH session using ssh_manager.py in container.
-    Establishes paramiko SSHClient inside VPN container for persistent channel-based execution."""
+    Establishes paramiko SSHClient inside container for persistent channel-based execution.
+    
+    VPN DISABLED: SSH connections are made directly from the container to HPC clusters
+    on the local network without VPN tunnel.
+    """
     user_id = current_user["user_id"]
     if not req.user_id or req.user_id != user_id:
         req.user_id = user_id  # Override with authenticated user_id
@@ -569,12 +612,13 @@ async def ssh_connect(req: SSHConnectRequest, current_user: Dict = Depends(get_c
     if not req.session_id:
         raise HTTPException(status_code=400, detail="session_id is required")
     
-    # Check if user has a VPN container - SSH MUST run from inside container
+    # Check if user has a container - SSH runs from inside container
     conn = connections.get(req.user_id, {})
     container_id = conn.get("container_id")
     
     if not container_id:
-        raise HTTPException(status_code=400, detail="No VPN container found. Connect via /vpn/connect first to access private network.")
+        # VPN DISABLED - Updated error message
+        raise HTTPException(status_code=400, detail="No container found. Please login first.")
     
     # Get or create user SSH sessions dict (not to be confused with global user_sessions)
     user_ssh_sessions = ssh_sessions.get(req.user_id, {})

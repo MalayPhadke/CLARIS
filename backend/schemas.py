@@ -3,11 +3,17 @@ from pydantic import BaseModel, Field
 
 
 class VPNConnectRequest(BaseModel):
+    # "\"\"\"VPN connection request model.
+    
+    # VPN DISABLED (2026-02-10): VPN fields are kept for backward compatibility
+    # but are not used since the backend is on the same network as HPC clusters.
+    # "\"\""
     user_id: str
-    vpn_url: str
+    # VPN DISABLED - These fields are optional/ignored
+    vpn_url: Optional[str] = None  # Kept for backward compatibility
     username: Optional[str] = None
     password: Optional[str] = None
-    real: bool = Field(False, description="If true and openconnect available, attempt real process")
+    real: bool = Field(False, description="VPN DISABLED - This flag is ignored")
 
 
 class SSHConnectRequest(BaseModel):
